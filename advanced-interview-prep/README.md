@@ -8,7 +8,7 @@
 | 模块 | 讲次 | 目录 | 主题 | 状态 |
 |---|---|---|---|---|
 | 线上故障排查（课程迭代） | 01~03 | [0.production-troubleshooting](0.production-troubleshooting/) | MySQL 突发故障、Redis 响应慢、Redis 热点问题 | ✅ 3 篇 |
-| 微服务架构 | 01~09 | [1.microservices-architecture](1.microservices-architecture/) | 注册发现、负载均衡、熔断、降级、限流、隔离、超时控制、调用第三方 | 🔶 8 篇（仅 09 待做） |
+| 微服务架构 | 01~09 | [1.microservices-architecture](1.microservices-architecture/) | 注册发现、负载均衡、熔断、降级、限流、隔离、超时控制、调用第三方、综合高可用治理 | ✅ 9 篇 |
 | 数据库与 MySQL | 10~21 | [2.mysql](2.mysql/) | 索引、SQL 优化、锁、MVCC、事务、迁移、分库分表、分布式事务 | ✅ 12 篇（[模块导航](2.mysql/README.md)） |
 | 消息队列 | 22~30 | [3.mq](3.mq/) | 使用场景、延迟消息、顺序、积压、不丢、不重、架构设计、Kafka 高性能 | ✅ 9 篇 |
 | 缓存 | 31~38 | [4.cache](4.cache/) | 过期、淘汰、缓存模式、一致性、穿透击穿雪崩、单线程、分布式锁、综合应用 | ✅ 8 篇 |
