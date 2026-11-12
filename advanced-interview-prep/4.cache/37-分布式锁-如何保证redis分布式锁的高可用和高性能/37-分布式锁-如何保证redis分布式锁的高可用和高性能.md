@@ -139,3 +139,128 @@
 ### Q8：Singleflight 优化和"一致性哈希去锁"矛盾吗？
 
 不矛盾，是递进关系：同实例内先 Singleflight 收敛竞争（优化锁的使用）；再把同业务请求路由到同节点（一致性哈希），此时连分布式锁都可以退化为**本地锁**——因为同 key 的并发已被拓扑结构天然串行化。一个治标一个治本，一起讲体现方案演进能力。
+
+---
+
+## 五、专题深挖：从 SETNX 到 Redisson——分布式锁基础层完全拆解
+
+### 1. SETNX 与原子互斥命令家族
+
+**SETNX = SET if Not eXists**："key 不存在才设置，存在就什么都不做"。设置成功返回 1、已存在返回 0。Redis 最古老的互斥原语，分布式锁的奠基石。但裸 SETNX 没法同时设过期时间，Redis 2.6.12 起 `SET` 命令加了修饰参数，**现代标准写法**：
+
+```bash
+SET lock:order:1001 uuid-xxx NX PX 30000
+# NX = 同 SETNX 语义    PX 30000 = 顺带 30 秒租约
+# 一条命令原子完成"抢锁 + 设租约"
+```
+
+**原子互斥/条件命令家族**（面试能报出这串说明底子好）：
+
+| 命令 | 语义 | 锁/并发场景用途 |
+|---|---|---|
+| `SETNX` | 不存在才设 | 抢锁（原始版） |
+| `SET key val NX PX ms` | 不存在才设 + 带过期 | **现代抢锁标准** |
+| `GETSET key val` | 设新值返回旧值（原子） | 原子换值，旧锁检测 |
+| `SET key val XX` | 存在才设（NX 反义） | 续约时的安全写 |
+| `INCR` / `DECR` | 原子计数 | 计数信号量、限流 |
+| `EVAL lua` | 整段脚本原子执行 | 解锁（比对 token 再删）、续约、一切复合操作 |
+| `HSET` + `PEXPIRE` + pub/sub | hash 结构存锁 | Redisson 可重入锁的实现基础 |
+
+记忆点：**Redis 单线程执行命令 = 每条命令天然原子**。分布式锁的全部技巧，就是把"抢、续、放"三个动作各自压缩进一条原子命令（或一段 Lua），不留中间状态。
+
+### 2. 展开"SETNX 成功 = 排他"（原文核心论证三层拆解）
+
+原文："如果一个线程能够用 SETNX 成功地在 Redis 上设置好一个键值对，那么在它删除这个键值对之前，别的线程都没办法再设置同样的键值对。"
+
+- **第一层：为什么"设置成功"= 拿到锁？** Redis 单线程处理命令：50 个实例同时发 `SET lock:k token NX`，命令在事件循环里排队挨个执行，第一个发现 key 不存在、设置成功返回 1，后面 49 个全部返回 0。**没有任何时序能让两个客户端同时成功——互斥性是单线程模型在数学上保证的，不是概率上的。**
+- **第二层：为什么删之前别人没法再设置？** `NX` 语义"存在即失败"，key 活着期间任何 `SET NX` 都被拒。"key 的存在性"就是锁状态位：key 存在 ⇔ 锁被持有；key 消失 ⇔ 锁空闲；删 key = 释放锁。
+- **第三层：为什么"分布式"？** 判定权在所有实例共享的第三方 Redis。JVM 锁只管本进程，而 50 台机器连同一个 Redis 抢同一个 key——**竞争被收敛到中立仲裁者手里**。
+
+两个隐患（原文后续展开）：持锁者删 key 前宕机 → 死锁 → 必须 `PX` 租约兜底；租约到期业务没跑完 → 互斥破 → 需要续期（看门狗）。
+
+### 3. 加锁失败如何等待（三种策略按档次排）
+
+**① 朴素自旋（面试能写，生产慎用）**：
+
+```java
+public void lockWithSpin(String key, String token, long leaseMs, long timeoutMs) {
+    long deadline = System.currentTimeMillis() + timeoutMs;
+    long backoff = 10;  // 初始退避 10ms
+    while (System.currentTimeMillis() < deadline) {
+        Boolean ok = redis.set(key, token, SetParams.setParams().nx().px(leaseMs));
+        if (Boolean.TRUE.equals(ok)) return;   // 抢到，返回
+        try {
+            Thread.sleep(backoff + ThreadLocalRandom.current().nextLong(10));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("等锁被中断", e);
+        }
+        backoff = Math.min(backoff * 2, 100);  // 指数退避，封顶 100ms
+    }
+    throw new RuntimeException("等锁超时");
+}
+```
+
+三个细节都是考点：**总超时兜底**（不能无限等，联动 07 篇超时控制）、**指数退避**（别拿固定频率打 Redis）、**随机抖动**（防等待者同频重试 → 惊群，见追问 Q3）。
+
+**② 发布订阅等待（Redisson 的做法，生产级）**：自旋的本质缺陷是锁释放瞬间等待者不知道，只能等下次轮询。Redisson 改成事件驱动：
+
+```
+1. 抢锁失败 → 订阅频道 redisson_lock__channel:{key}
+2. 挂起自己（Semaphore.tryAcquire(等待超时)），不再轮询
+3. 持锁者解锁时 PUBLISH "UNLOCK_MESSAGE" 到频道
+4. 等待者被唤醒 → 立刻再抢 → 失败则重新订阅挂起
+```
+
+延迟从平均半个轮询周期降到毫秒级，且零无效请求。
+
+**③ 直接失败（fail-fast）**：很多业务根本不该等——抢不到锁说明有并发重复操作（防重复提交、防重任务），直接报错让用户重试。**等不等取决于语义是"我要排队"还是"拒绝重入"。**
+
+### 4. 锁如何续期（看门狗 watchdog）
+
+问题：租约 30s 业务跑 40s——第 30s 锁过期，互斥破。思路：**业务活着，就定期给锁续命**。
+
+```
+持锁成功（租约 30s）
+   └─ 后台定时任务：每 10s（租约的 1/3）检查
+        ├─ 业务还在跑 → 重置过期时间为 30s（续约）
+        └─ 业务结束/线程死了 → 不再续约 → 锁到期自然释放
+```
+
+关键设计点：
+
+- **续约间隔 = 租约 / 3**：一次失败还有两次机会，不会一次抖动就丢锁
+- **续约命令**：Lua 原子完成"GET 比对 token + PEXPIRE"（先确认锁是自己的）
+- **续约前提是持锁线程活着**：线程死了续约线程也死，锁自然释放——**看门狗不会造成死锁**，这是它比"设超长过期时间"优雅的原因
+- **坑**（见追问 Q6）：Full GC / 线程池打满导致续约线程被饿死 → 锁照样过期 → 互斥破。看门狗降低的是"过期误伤"的**概率**而非 100% 保证——回到 Martin Kleppmann 的批评：基于时间的锁永远敌不过停顿（GC pause，见 Q4）
+
+**Redisson 默认行为**：`lock()` 不传超时 → 自动开看门狗（租约 30s、每 10s 续）；传了 `leaseTime` → 不续期，到期就释放。
+
+### 5. Redisson 介绍
+
+**Redisson = Redis + son**，不是简单的 Redis 客户端，而是 **Redis 上的分布式 Java 工具库**——把 Redis 包装成熟悉的 `java.util.concurrent`：
+
+```java
+RLock lock = redisson.getLock("order:1001");
+lock.lock();                       // 抢锁 + 自动看门狗续期
+try {
+    // 临界区
+} finally {
+    lock.unlock();                 // token 校验 + Lua 原子释放
+}
+```
+
+前面 2~4 节的脏活它全包了：
+
+| 手写方案 | Redisson 对应物 |
+|---|---|
+| SET NX PX 抢锁 | `lock()` 底层 Lua：hash 结构 `HSET key threadId 1` + `PEXPIRE` |
+| 自旋等锁 | pub/sub 订阅 + Semaphore 挂起唤醒 |
+| 看门狗续期 | `lock()` 不传参自动开启；`lock(30, SECONDS)` 关闭 |
+| token + Lua 解锁 | `unlock()` 内置 |
+
+能力全景：`RLock` 可重入锁、`RReadWriteLock` 读写锁、`RFairLock` 公平锁（按等待顺序）、`RedLock` 多实例红锁、`RSemaphore` 信号量、`RCountDownLatch` 倒数闩，以及 `RMap`/`RBucket`/`RAtomicLong` 等分布式数据结构。
+
+**底层为什么用 hash 不用 string**：可重入要记录"谁、加了几次"——`HSET lockKey threadUUID:threadId 1`，重入 `HINCRBY` 加一，解锁减一，减到零才真删 key。面试常考的实现细节。
+
+**使用注意（选型话术）**：Redisson 解决"锁的易用性和完备性"，**解决不了主从切换丢锁这个架构级问题**（见 Q6 Redlock）。普通业务 Redisson 单机/主从够用；金融级强互斥考虑 ZK/etcd（CP）或 Fencing token。
