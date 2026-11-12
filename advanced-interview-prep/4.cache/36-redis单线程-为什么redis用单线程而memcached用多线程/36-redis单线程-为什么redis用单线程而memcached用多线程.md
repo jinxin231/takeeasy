@@ -129,3 +129,66 @@ Netty 主从 Reactor：BossGroup（主 Reactor，只接受连接）+ WorkerGroup
 ### Q7：思考题 2——性能瓶颈时，IO 多线程还是 Cluster 扩容？
 
 分情况：①瓶颈在**单机网卡/IO**（大 value、高并发连接）且数据量小、无集群运维能力 → IO 多线程，改动小见效快；②瓶颈在**数据量/容量/热点**，或已有集群化方向 → Cluster，顺带解决可用性；③务实答案：先压测定位瓶颈再选——能用 Cluster 就别开多线程（Cluster 收益多维），多线程是"不想动架构时的止痛药"。
+
+---
+
+## 五、专题深挖（讨论补充）
+
+### 专题 1：哪些中间件用了 epoll + Reactor？
+
+**用了的（主流网络组件几乎都是）**：
+
+| 中间件 | IO 模型 | 线程模型 |
+|---|---|---|
+| **Nginx** | epoll（ET 边缘触发，极致性能） | 多进程，每个 worker 独立 Reactor 事件循环 |
+| **Netty**（Dubbo、gRPC、RocketMQ、ZK 底层都是它） | Linux 上 native epoll（EpollEventLoop） | 主从 Reactor：Boss 接连接，Worker 管读写 |
+| **Kafka** | Java NIO Selector（Linux 底层即 epoll） | Acceptor + Processor 池 + Handler 池 |
+| **Memcached** | libevent（Linux 后端即 epoll） | 多线程 Reactor |
+| **Tomcat（NIO connector）** | Java NIO → epoll | Acceptor + Poller + Worker 池 |
+| **Envoy** | libevent/epoll | 每 worker 线程一个事件循环 |
+
+**反例**：**MySQL、PostgreSQL**——一连接一线程/进程。连接数相对少（几百 vs Redis 几万）、单查询重，连接不是瓶颈，犯不上 IO 多路复用。
+
+话术："高并发网络组件没有不用 epoll 的——Nginx、Netty、Kafka 全家都是；反例是 MySQL，连接少查询重，一连接一线程反而简单。"
+
+### 专题 2：怎么"了解清楚你的 Redis 的性能瓶颈"？
+
+**瓶颈按出现顺序分层**：
+
+1. **网络 IO**（最先到顶）：网卡带宽（大 value 场景几十 MB/s 就满）、连接数——6.0 加 IO 多线程就是为此
+2. **单核 CPU**：命令执行单线程，一个核 100% 到头（简单命令约 10 万 QPS）；慢命令、大 key 会提前引爆
+3. **内存容量**：超 maxmemory → 淘汰/报错；bgsave fork 时 COW 内存翻倍风险
+4. **持久化**：实例大时 fork 卡百毫秒级
+
+**观测命令**（答出这些显得真干过）：
+
+```bash
+INFO stats        # instantaneous_ops_per_sec：当前 QPS
+INFO cpu          # used_cpu_user：单核是否打满
+INFO clients      # connected_clients / blocked_clients
+INFO memory       # used_memory / maxmemory 水位
+INFO commandstats # 各命令耗时分布，找慢命令元凶
+SLOWLOG GET 10    # 慢查询实锤
+```
+
+### 专题 3：epoll 三个系统调用详解
+
+- **`epoll_create`**：**进程级，只调一次，不是连接来了才调**。进程启动时（Redis 是 main → 创建事件循环）调用，在内核创建 eventpoll 结构（红黑树 + 就绪链表 + 等待队列），返回 epfd（自己也是个 fd）。类比：**建了一个快递柜**
+- **`epoll_ctl`**：**每个新连接调一次（ADD）**。把 fd 挂进红黑树并登记关心的事件（EPOLLIN 等）；还有 MOD（改事件）/DEL（连接关闭摘除）。类比：**给柜子登记格子，"这个格子的包裹到了请记下"**
+- **`epoll_wait`**：**事件循环每轮调一次**。从就绪链表把已就绪 fd 拷到用户态数组返回。内核早已（网卡中断驱动）把就绪 fd 挂好队，所以它是**取结果**而非**查状态**——与 select 轮询的本质区别。超时参数：-1 死等、0 看一眼就走、N 最多等 N 毫秒。类比：**取"已到件"清单**
+
+生命周期一句话：**启动建柜（create）→ 每个连接登记格子（ctl ADD）→ 主循环不停取件（wait）→ 连接关闭退格（ctl DEL）→ 进程结束拆柜（close）**。
+
+### 专题 4："IO 多线程 vs Cluster 扩容"题在问什么？
+
+背景：Redis 顶到性能上限时有两条路线——**A. 开 6.0 IO 多线程**（不动架构，纵向榨干单机多核，命令执行仍单线程）；**B. Cluster 加分片**（slot 重分配，横向扩容）。
+
+决策框架：
+
+| 瓶颈定位 | 选什么 | 理由 |
+|---|---|---|
+| 纯 IO 瓶颈（带宽/连接），数据量小，不想动架构 | IO 多线程 | 改一行配置见效，零运维成本 |
+| 数据量增长、容量不足、本来就要集群化 | Cluster 扩容 | 性能+容量+可用性一举三得 |
+| 热点 key（单 key 被打爆） | **两个都没用** | Cluster 里热点还是落一个分片；靠本地缓存/读写分离 |
+
+文章立场（业界共识）：**能用 Cluster 就别开多线程**——多线程只解决单机 IO，Cluster 顺带解决可用性；多线程是"不想动架构时的止痛药"。这题最想听到的第一句话：**先压测定位瓶颈再选**。
