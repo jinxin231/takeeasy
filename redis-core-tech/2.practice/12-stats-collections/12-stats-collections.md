@@ -1,7 +1,7 @@
 # 12 有一亿个 keys 要统计，应该用哪种集合？
 
 > 来源：极客时间《Redis 核心技术与实战》蒋德钧（实践篇 12）
-> 整理日期：2026-11-13
+> 整理日期：2026-11-13｜加餐讨论：2026-11-16
 
 ---
 
@@ -110,3 +110,54 @@ Bitmap 和布隆过滤器是亲兄弟：BF ≈ Bitmap + k 个哈希函数（面�
 ### Q4：Kaito 的 ZSet 在线用户统计为什么优雅？
 
 `ZADD online_users <上线时间戳> <user_id>` 天然双功能：去重（同 user_id 重复 ZADD 只更新时间）+ 按时间段计数（ZCOUNT start end）+ 查询最近上线时间（score 即信息）。一个结构同时解决"在不在、多少、啥时候在"——比 Set + 额外时间戳字段省一层。
+
+---
+
+## 五、加餐讨论：Set 的底层存储与读写（2026-11-16 补充）
+
+**底层编码（生产 5.0 的语义）**：
+
+```
+成员全是整数 且 ≤ set-max-intset-entries(默认512) → intset（整数集合）
+  一块连续的有序整数数组：元素类型统一按最大成员的宽度（2/4/8 字节），非常紧凑
+  升级不可逆（插入字符串 → 转 hashtable；小 int 数组被撑大也会整体升宽）
+
+其他情况 → hashtable（dict）
+  复用主字典结构：member 当 key，value 全部置 NULL
+  哈希天然去重——这就是"无序不重复集合"的实现
+```
+
+- Redis 7.2 起小 Set 也用 listpack（`set-max-listpack-entries 128`），5.0 无此特性
+- `SISMEMBER` 是 O(1) 哈希查，Set 的高频操作；`SMEMBERS`/`SINTER` 这类全量/集合运算是 O(N)，成员数大了就是大 key 问题的变体
+
+**Java 读写示例（Jedis）**：
+
+```java
+import redis.clients.jedis.Jedis;
+import java.util.Set;
+
+try (Jedis jedis = new Jedis("localhost", 6379)) {
+
+    // 写：SADD 可一次加多个，重复元素自动去重（返回新增个数）
+    jedis.sadd("user:9527:tags", "vip", "sports", "music");
+    jedis.sadd("user:9527:tags", "vip");        // 已存在，返回 0，无副作用
+
+    // 读单个判断：SISMEMBER —— 最常用，O(1)
+    boolean isVip = jedis.sismember("user:9527:tags", "vip");
+
+    // 读全量：SMEMBERS —— 大集合慎用，一次性拉全部成员
+    Set<String> tags = jedis.smembers("user:9527:tags");
+
+    // 随机读（不删）：SRANDMEMBER；弹出（删）：SPOP
+    String lucky = jedis.srandmember("user:9527:tags");
+
+    // 集合运算：SINTER 交集 / SUNION 并集 / SDIFF 差集
+    jedis.sadd("user:9528:tags", "vip", "game");
+    Set<String> common = jedis.sinter("user:9527:tags", "user:9528:tags"); // [vip]
+
+    // 删成员：SREM
+    jedis.srem("user:9527:tags", "music");
+}
+```
+
+**和 11 讲加餐的串联**：场景重构题的"方案 4（用 Set）"为什么错——Set 只能存 member 不能存结构化字段，退化成 "userId:json" 当 member 后，外壳照付、字段还取不出来单独更新。选型先看"要回答什么问题"：在不在 → Set/BF；字段级读写 → Hash；去重计数 → HLL。
