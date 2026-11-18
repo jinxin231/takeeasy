@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>慢依赖如何耗尽线程池</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{background:#0b0e14;color:#dbe2ec;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;font-size:14px;line-height:1.5}
+  .wrap{max-width:1080px;margin:0 auto;padding:20px 16px 32px}
+  header h1{font-size:20px;font-weight:650;letter-spacing:.5px}
+  header .sub{color:#8a94a6;font-size:13px;margin-top:2px}
+  .verdict{margin-top:12px;padding:10px 14px;border-radius:10px;border:1px solid #232c3d;background:#10151f;font-size:14px;display:flex;align-items:center;gap:10px;transition:border-color .3s}
+  .verdict .dot{flex:none;width:10px;height:10px;border-radius:50%}
+  .verdict.ok .dot{background:#34d399}.verdict.ok{border-color:#14532d}
+  .verdict.warn .dot{background:#fbbf24}.verdict.warn{border-color:#713f12}
+  .verdict.bad .dot{background:#ef4444;box-shadow:0 0 8px #ef4444}.verdict.bad{border-color:#7f1d1d}
+  .verdict.good .dot{background:#34d399;box-shadow:0 0 8px #34d399}.verdict.good{border-color:#14532d}
+  .card{background:#11161f;border:1px solid #1e2532;border-radius:12px;padding:16px;margin-top:14px}
+  .controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:14px 22px}
+  .ctl label{display:flex;justify-content:space-between;align-items:baseline;font-size:13px;color:#aeb8c8;margin-bottom:6px}
+  .ctl .val{color:#e8edf5;font-weight:600;font-variant-numeric:tabular-nums}
+  .ctl .hint{font-size:11px;color:#5f6b7e;margin-top:4px}
+  input[type=range]{width:100%;accent-color:#38bdf8;cursor:pointer}
+  input[type=range]:disabled{accent-color:#3a4456;cursor:not-allowed;opacity:.6}
+  .switchBox{display:flex;flex-direction:column;justify-content:center;gap:2px}
+  .switch{display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:5px 0;user-select:none}
+  .switch input{display:none}
+  .track{flex:none;width:38px;height:22px;border-radius:11px;background:#2a3344;position:relative;transition:background .2s;margin-top:1px}
+  .track::after{content:'';position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#8a94a6;transition:all .2s}
+  .switch input:checked+.track{background:#059669}
+  .switch input:checked+.track::after{transform:translateX(16px);background:#fff}
+  .switch .txt{font-size:13px;color:#dbe2ec}
+  .switch .txt em{display:block;font-style:normal;font-size:11px;color:#5f6b7e}
+  .badge{display:inline-block;margin-left:6px;padding:1px 8px;border-radius:99px;font-size:11px;font-weight:600;vertical-align:1px}
+  .badge.off{background:#1c2431;color:#5f6b7e}
+  .badge.closed{background:#0f2c22;color:#34d399}
+  .badge.open{background:#3a1118;color:#f87171}
+  .badge.half{background:#33260e;color:#fbbf24}
+  .btnBox{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+  .btn{padding:10px 18px;border-radius:9px;border:1px solid #2a3344;background:#1a2230;color:#dbe2ec;cursor:pointer;font-size:14px;font-weight:600;transition:filter .15s}
+  .btn:hover{filter:brightness(1.25)}
+  .btn.danger{background:#7f1d1d;border-color:#b91c1c;color:#fee2e2}
+  .chartCard{padding:12px 12px 8px}
+  .chartHead{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:2px 6px 8px}
+  .chartTitle{font-size:13px;font-weight:600;color:#aeb8c8}
+  .legend{display:flex;gap:16px;font-size:12px;color:#8a94a6;align-items:center;flex-wrap:wrap}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .rejBadge{display:none;background:#3a1118;color:#f87171;padding:2px 10px;border-radius:99px;font-size:12px;font-weight:600}
+  canvas{display:block;width:100%;height:280px}
+  .bottom{display:grid;grid-template-columns:1.25fr 1fr;gap:14px}
+  @media(max-width:820px){.bottom{grid-template-columns:1fr}}
+  .metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;align-content:start}
+  @media(max-width:560px){.metrics{grid-template-columns:1fr}}
+  .metric{background:#11161f;border:1px solid #1e2532;border-radius:12px;padding:14px 16px}
+  .mTitle{font-size:12px;color:#8a94a6;margin-bottom:6px}
+  .mVal{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums;line-height:1.15}
+  .mSub{font-size:11px;color:#5f6b7e;margin-top:5px;font-variant-numeric:tabular-nums}
+  .bar{height:6px;border-radius:3px;background:#1c2431;margin-top:8px;overflow:hidden}
+  .bar>div{height:100%;border-radius:3px;background:#38bdf8;transition:width .2s}
+  .little .mTitle{font-size:13px;font-weight:600;color:#aeb8c8;margin-bottom:10px}
+  .formula{font-size:14px;color:#c6cfdd;font-variant-numeric:tabular-nums;padding:6px 0}
+  .formula b{color:#fb923c}
+  .cmpRow{display:flex;justify-content:space-between;font-size:13px;color:#8a94a6;padding:3px 0;border-top:1px dashed #1e2532;font-variant-numeric:tabular-nums}
+  .cmpRow b{color:#dbe2ec}
+  .warn{margin-top:10px;padding:8px 12px;border-radius:8px;font-size:13px;display:none}
+  .warn.show{display:block}
+  .warn.bad{background:#2a0f14;color:#fca5a5;border:1px solid #7f1d1d}
+  .warn.ok{background:#0c231b;color:#6ee7b7;border:1px solid #14532d}
+  .tip{margin-top:14px;font-size:12px;color:#5f6b7e;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>慢依赖如何耗尽线程池</h1>
+    <p class="sub">服务 A 的有界工作线程池 × 慢下游 D —— 微服务韧性交互模拟器（Little 定律：在途并发 = 速率 × 时延）</p>
+    <div id="verdict" class="verdict ok"><span class="dot"></span><span id="verdictText">系统健康</span></div>
+  </header>
+
+  <section class="card controls">
+    <div class="ctl">
+      <label>D 的响应延迟 <span class="val" id="latVal">50 ms</span></label>
+      <input type="range" id="lat" min="0" max="1000" step="1" value="0">
+      <div class="hint">对数刻度：50 ms ~ 30 s</div>
+    </div>
+    <div class="ctl">
+      <label>D 流量速率 <span class="val" id="dRateVal">20 req/s</span></label>
+      <input type="range" id="dRate" min="0" max="50" step="1" value="20">
+    </div>
+    <div class="ctl">
+      <label>普通流量速率 <span class="val">50 req/s（固定）</span></label>
+      <input type="range" min="0" max="50" value="50" disabled>
+      <div class="hint">普通请求处理耗时固定 50 ms，调用健康下游</div>
+    </div>
+    <div class="ctl">
+      <label>线程池大小 <span class="val" id="poolVal">200</span></label>
+      <input type="range" id="pool" min="50" max="1000" step="10" value="200">
+    </div>
+    <div class="ctl switchBox">
+      <label class="switch"><input type="checkbox" id="swTimeout"><span class="track"></span>
+        <span class="txt">超时上限<em>D 调用超过 3s 即释放线程</em></span></label>
+      <label class="switch"><input type="checkbox" id="swBulk"><span class="track"></span>
+        <span class="txt">舱壁隔离<em>D 流量只能用独立的 50 线程子池</em></span></label>
+      <label class="switch"><input type="checkbox" id="swBreaker"><span class="track"></span>
+        <span class="txt">熔断器<span id="brkBadge" class="badge off">未启用</span><em>D 超时率 &gt; 50% 时打开，快速失败 1ms 返回，10s 后半开试探</em></span></label>
+    </div>
+    <div class="ctl btnBox">
+      <button class="btn danger" id="btnFault">⚡ 注入故障（D 延迟 → 30s）</button>
+      <button class="btn" id="btnReset">重置</button>
+    </div>
+  </section>
+
+  <section class="card chartCard">
+    <div class="chartHead">
+      <span class="chartTitle">线程池水位图（占用线程数 / 时间，快速失败 · 不排队）</span>
+      <div class="legend">
+        <span><i style="background:#38bdf8"></i>普通流量占用</span>
+        <span><i style="background:#fb923c"></i>D 流量占用</span>
+        <span><i style="background:#ef4444"></i>池容量</span>
+        <span id="rejBadge" class="rejBadge">普通流量被拒 0 次/s</span>
+      </div>
+    </div>
+    <canvas id="chart"></canvas>
+  </section>
+
+  <section class="bottom">
+    <div class="metrics">
+      <div class="metric">
+        <div class="mTitle">D 流量成功率（近 5s）</div>
+        <div class="mVal" id="mD">—</div>
+        <div class="mSub" id="mDSub">尝试 0/s</div>
+      </div>
+      <div class="metric">
+        <div class="mTitle">普通流量成功率（近 5s）</div>
+        <div class="mVal" id="mN">—</div>
+        <div class="mSub" id="mNSub">尝试 0/s</div>
+      </div>
+      <div class="metric">
+        <div class="mTitle">线程池当前占用</div>
+        <div class="mVal" id="mP">0 / 200</div>
+        <div class="bar"><div id="mPBar" style="width:0%"></div></div>
+        <div class="mSub" id="mPSub">普通 0 · D 0</div>
+      </div>
+    </div>
+    <div class="card little" style="margin-top:0">
+      <div class="mTitle">Little 定律实时计算</div>
+      <div class="formula" id="littleFormula"></div>
+      <div class="cmpRow"><span id="littleLimitLabel">对比：线程池容量</span><b id="littleLimit"></b></div>
+      <div class="cmpRow"><span>普通流量所需并发 = 50/s × 0.05s</span><b>≈ 2.5 线程</b></div>
+      <div class="cmpRow" id="littleTmoRow" style="display:none"><span>超时上限生效后 D 实际并发</span><b id="littleTmo"></b></div>
+      <div id="littleWarn" class="warn ok"></div>
+    </div>
+  </section>
+
+  <p class="tip">建议玩法：保持默认 → 点「注入故障」，看 D 占用爬升打满池子、普通流量成功率崩到 0 → 再逐个打开三个开关，对比三种防御各自如何把普通流量救回来。</p>
+</div>
+
+<script>
+'use strict';
+/* ============ 参数与状态 ============ */
+const TICK = 0.05, WIN = 60, RATE_WIN = 5;
+const P = { dDelay:0.05, dRate:20, nRate:50, nDur:0.05, pool:200,
+            timeout:false, bulkhead:false, breaker:false, bulkSize:50, tmo:3 };
+let sim;
+function resetSim(){
+  sim = { t:0, nActive:[], dActive:[], hist:[],
+          nAtt:[], nOk:[], dAtt:[], dOk:[], rej:[],
+          brkStats:[], brk:'closed', brkOpenedAt:0, probe:false,
+          carryN:0, carryD:0 };
+}
+resetSim();
+
+/* ============ 模拟核心（固定步长 50ms） ============ */
+function spawnD(t, probe){
+  let dur = P.dDelay;
+  const ok = P.dDelay <= P.tmo + 1e-9;
+  if (P.timeout && dur > P.tmo) dur = P.tmo;
+  sim.dActive.push({ start:t, end:t+dur, ok, counted:false, probe });
+}
+function openBreaker(){
+  sim.brk = 'open'; sim.brkOpenedAt = sim.t; sim.probe = false;
+  // 熔断打开：中止所有在飞的 D 调用（计为失败），立即释放线程
+  for (const r of sim.dActive){
+    if (!r.counted){ r.counted = true; sim.brkStats.push({t:sim.t, ok:false}); }
+  }
+  sim.dActive.length = 0;
+}
+function tick(){
+  const t = sim.t + TICK; sim.t = t;
+  let rejNormal = 0;
+  // 1) 普通请求完成
+  const na = sim.nActive;
+  for (let i = na.length-1; i >= 0; i--){
+    if (na[i] <= t + 1e-9){ na.splice(i,1); sim.nOk.push(t); }
+  }
+  // 2) D 请求：慢调用标记 + 完成处理
+  const da = sim.dActive;
+  let reopen = false;
+  for (let i = da.length-1; i >= 0; i--){
+    const r = da[i];
+    if (!r.counted && t - r.start >= P.tmo - 1e-9){
+      r.counted = true;
+      if (!r.ok) sim.brkStats.push({t, ok:false});
+    }
+    if (r.end <= t + 1e-9){
+      da.splice(i,1);
+      if (r.ok){ sim.dOk.push(t); if(!r.counted){ r.counted=true; sim.brkStats.push({t,ok:true}); } }
+      else if (!r.counted){ r.counted = true; sim.brkStats.push({t,ok:false}); }
+      if (r.probe){
+        sim.probe = false;
+        if (r.ok){ sim.brk = 'closed'; } else { reopen = true; }
+      }
+    }
+  }
+  if (reopen) openBreaker();
+  // 3) 熔断器状态机
+  if (!P.breaker){ sim.brk = 'closed'; }
+  else if (sim.brk === 'closed'){
+    let n=0, f=0;
+    for (const s of sim.brkStats){ if (s.t >= t-3){ n++; if(!s.ok) f++; } }
+    if (n >= 10 && f/n > 0.5) openBreaker();
+  } else if (sim.brk === 'open' && t - sim.brkOpenedAt >= 10){
+    sim.brk = 'half'; sim.probe = false;
+  }
+  // 4) 到达：两类请求在同一 tick 内随机交错竞争空闲线程
+  //    （真实的并发抢锁语义：否则 D 永远抢不到普通请求刚释放的槽位）
+  let kN = 0, kD = 0;
+  sim.carryN += P.nRate * TICK;
+  while (sim.carryN >= 1){ sim.carryN -= 1; kN++; }
+  sim.carryD += P.dRate * TICK;
+  while (sim.carryD >= 1){ sim.carryD -= 1; kD++; }
+  const ev = [];
+  for (let i=0;i<kN;i++) ev.push(0);
+  for (let i=0;i<kD;i++) ev.push(1);
+  for (let i=ev.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; const tmp=ev[i]; ev[i]=ev[j]; ev[j]=tmp; }
+  for (const e of ev){
+    if (e === 0){
+      sim.nAtt.push(t);
+      if (na.length + da.length >= P.pool){ sim.rej.push({t,k:'n'}); rejNormal++; }
+      else na.push(t + P.nDur);
+    } else {
+      sim.dAtt.push(t);
+      if (P.breaker && sim.brk === 'open') continue;                 // 快速失败 1ms 返回
+      if (P.breaker && sim.brk === 'half'){
+        if (sim.probe) continue;                                     // 其余快速失败
+        sim.probe = true; spawnD(t, true); continue;                 // 放行一个试探请求
+      }
+      if (na.length + da.length >= P.pool){ sim.rej.push({t,k:'d'}); continue; }
+      if (P.bulkhead && da.length >= P.bulkSize){ sim.rej.push({t,k:'d'}); continue; }
+      spawnD(t, false);
+    }
+  }
+  // 5) 修剪窗口 + 采样历史
+  trimArr(sim.nAtt,t); trimArr(sim.nOk,t); trimArr(sim.dAtt,t); trimArr(sim.dOk,t);
+  while (sim.rej.length && sim.rej[0].t < t-5) sim.rej.shift();
+  while (sim.brkStats.length && sim.brkStats[0].t < t-4) sim.brkStats.shift();
+  sim.hist.push({t, n:na.length, d:da.length});
+  while (sim.hist.length && sim.hist[0].t < t-WIN) sim.hist.shift();
+  return rejNormal;
+}
+function trimArr(a,t){ while(a.length && a[0] < t-RATE_WIN) a.shift(); }
+
+/* ============ 画布：线程池水位图 ============ */
+const canvas = document.getElementById('chart');
+const ctx = canvas.getContext('2d');
+const CH = 280;
+let rejFlash = 0;
+function resize(){
+  const dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth || canvas.parentElement.clientWidth - 24;
+  canvas.width = w*dpr; canvas.height = CH*dpr;
+  canvas.style.height = CH+'px';
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+}
+window.addEventListener('resize', resize);
+
+function draw(){
+  const w = canvas.clientWidth, h = CH;
+  ctx.clearRect(0,0,w,h);
+  const L=46, R=14, T=16, B=24, iw=w-L-R, ih=h-T-B;
+  const span = WIN, x0 = sim.t > WIN ? sim.t - WIN : 0;
+  let maxOcc = P.pool;
+  for (const s of sim.hist){ const o = s.n+s.d; if (o>maxOcc) maxOcc=o; }
+  const yMax = Math.max(10, maxOcc*1.15);
+  const X = t => L + ((t-x0)/span)*iw;
+  const Y = v => T + ih - (v/yMax)*ih;
+  // 网格 + 纵轴
+  ctx.font = '11px -apple-system,"PingFang SC",sans-serif';
+  for (let i=0;i<=4;i++){
+    const v = yMax*i/4, y = Y(v);
+    ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+    ctx.beginPath(); ctx.moveTo(L,y); ctx.lineTo(L+iw,y); ctx.stroke();
+    ctx.fillStyle = '#5f6b7e'; ctx.textAlign='left';
+    ctx.fillText(String(Math.round(v)), 8, y+4);
+  }
+  // 横轴时间标签
+  ctx.fillStyle = '#5f6b7e'; ctx.textAlign='center';
+  for (let tt = Math.ceil(x0/15)*15; tt <= x0+span; tt += 15){
+    ctx.fillText(tt+'s', X(tt), h-8);
+  }
+  // 堆叠面积
+  const hs = sim.hist;
+  if (hs.length > 1){
+    // D（上层）
+    ctx.beginPath();
+    ctx.moveTo(X(hs[0].t), Y(hs[0].n));
+    for (const s of hs) ctx.lineTo(X(s.t), Y(s.n+s.d));
+    for (let i=hs.length-1;i>=0;i--) ctx.lineTo(X(hs[i].t), Y(hs[i].n));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(251,146,60,0.78)'; ctx.fill();
+    // 普通（下层）
+    ctx.beginPath();
+    ctx.moveTo(X(hs[0].t), Y(0));
+    for (const s of hs) ctx.lineTo(X(s.t), Y(s.n));
+    for (let i=hs.length-1;i>=0;i--) ctx.lineTo(X(hs[i].t), Y(0));
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(56,189,248,0.55)'; ctx.fill();
+  }
+  // 池容量红线
+  ctx.strokeStyle = '#ef4444'; ctx.setLineDash([7,5]); ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(L, Y(P.pool)); ctx.lineTo(L+iw, Y(P.pool)); ctx.stroke();
+  ctx.setLineDash([]); ctx.lineWidth = 1;
+  ctx.fillStyle = '#ef4444'; ctx.textAlign='right';
+  ctx.fillText('池容量 '+P.pool, L+iw-4, Y(P.pool)-5);
+  // 舱壁子池线
+  if (P.bulkhead){
+    ctx.strokeStyle = 'rgba(251,146,60,0.8)'; ctx.setLineDash([3,4]);
+    ctx.beginPath(); ctx.moveTo(L, Y(P.bulkSize)); ctx.lineTo(L+iw, Y(P.bulkSize)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#fb923c';
+    ctx.fillText('D 舱壁 '+P.bulkSize, L+iw-4, Y(P.bulkSize)-5);
+  }
+  // 池满标记
+  const cur = sim.nActive.length + sim.dActive.length;
+  if (cur >= P.pool){
+    ctx.fillStyle = '#f87171'; ctx.textAlign='left';
+    ctx.font = 'bold 12px -apple-system,"PingFang SC",sans-serif';
+    ctx.fillText('⚠ 池满', L+6, T+14);
+    ctx.font = '11px -apple-system,"PingFang SC",sans-serif';
+  }
+  // 拒绝红色闪烁（顶部）
+  if (rejFlash > 0.03){
+    ctx.fillStyle = 'rgba(239,68,68,'+(rejFlash*0.35).toFixed(3)+')';
+    ctx.fillRect(L, T, iw, 7);
+    ctx.fillStyle = 'rgba(248,113,113,'+Math.min(1,rejFlash+0.2).toFixed(3)+')';
+    ctx.textAlign = 'center';
+    ctx.font = 'bold 12px -apple-system,"PingFang SC",sans-serif';
+    ctx.fillText('正在拒绝请求（快速失败）', L+iw/2, T+6);
+    ctx.font = '11px -apple-system,"PingFang SC",sans-serif';
+  }
+}
+
+/* ============ UI 更新 ============ */
+const $ = id => document.getElementById(id);
+function fmtDur(sec){
+  if (sec < 1) return Math.round(sec*1000)+' ms';
+  if (sec < 10) return sec.toFixed(1)+' s';
+  return Math.round(sec)+' s';
+}
+function fmtNum(v){ return v >= 100 ? String(Math.round(v)) : String(Math.round(v*10)/10); }
+function rateColor(v){ return v===null ? '#5f6b7e' : v>=0.95 ? '#34d399' : v>=0.7 ? '#fbbf24' : '#f87171'; }
+
+function updateUI(){
+  const t = sim.t;
+  const nA=sim.nAtt.length, nO=sim.nOk.length, dA=sim.dAtt.length, dO=sim.dOk.length;
+  const nR = nA ? nO/nA : null;
+  const dR = dA ? dO/dA : null;
+  // 指标卡片
+  $('mD').textContent = dR===null ? '—' : Math.round(dR*100)+'%';
+  $('mD').style.color = rateColor(dR);
+  $('mDSub').textContent = '尝试 '+(dA/RATE_WIN).toFixed(0)+'/s · 成功 '+(dO/RATE_WIN).toFixed(0)+'/s';
+  $('mN').textContent = nR===null ? '—' : Math.round(nR*100)+'%';
+  $('mN').style.color = rateColor(nR);
+  $('mNSub').textContent = '尝试 '+(nA/RATE_WIN).toFixed(0)+'/s · 成功 '+(nO/RATE_WIN).toFixed(0)+'/s';
+  const curN = sim.nActive.length, curD = sim.dActive.length, cur = curN+curD;
+  $('mP').textContent = cur+' / '+P.pool;
+  $('mP').style.color = cur>=P.pool ? '#f87171' : cur>P.pool*0.8 ? '#fbbf24' : '#dbe2ec';
+  $('mPSub').textContent = '普通 '+curN+' · D '+curD;
+  const bar = $('mPBar');
+  bar.style.width = Math.min(100, cur/P.pool*100)+'%';
+  bar.style.background = cur>=P.pool ? '#ef4444' : curD>curN ? '#fb923c' : '#38bdf8';
+  // 熔断器徽章
+  const bb = $('brkBadge');
+  if (!P.breaker){ bb.className='badge off'; bb.textContent='未启用'; }
+  else if (sim.brk==='open'){ bb.className='badge open'; bb.textContent='已打开 · 快速失败'; }
+  else if (sim.brk==='half'){ bb.className='badge half'; bb.textContent='半开 · 试探中'; }
+  else { bb.className='badge closed'; bb.textContent='闭合 · 正常'; }
+  // 拒绝徽章（近 1s 普通流量被拒数）
+  let rejN = 0;
+  for (const r of sim.rej){ if (r.k==='n' && r.t > t-1) rejN++; }
+  const rb = $('rejBadge');
+  if (rejN > 0){ rb.style.display='inline-block'; rb.textContent='普通流量被拒 '+rejN+' 次/s'; }
+  else rb.style.display='none';
+  // Little 定律面板
+  const need = P.dRate * P.dDelay;
+  $('littleFormula').innerHTML = 'D 所需并发 = '+P.dRate+'/s × '+fmtDur(P.dDelay)+' = <b>'+fmtNum(need)+' 线程</b>';
+  const limit = P.bulkhead ? P.bulkSize : P.pool;
+  $('littleLimitLabel').textContent = P.bulkhead ? '对比：D 舱壁子池容量' : '对比：线程池容量';
+  $('littleLimit').textContent = limit+' 线程';
+  const tmoRow = $('littleTmoRow');
+  if (P.timeout && P.dDelay > P.tmo){
+    tmoRow.style.display='flex';
+    $('littleTmo').textContent = P.dRate+'/s × 3s = '+fmtNum(P.dRate*P.tmo)+' 线程';
+  } else tmoRow.style.display='none';
+  const lw = $('littleWarn');
+  if (need > limit){
+    lw.className = 'warn show bad';
+    lw.textContent = P.bulkhead
+      ? '⚠ 超载 '+(need/limit).toFixed(1)+'× —— D 会打满自己的 50 线程子池，但普通流量被舱壁保护'
+      : '⚠ 超载 '+(need/limit).toFixed(1)+'× —— D 将耗尽整个线程池，无辜的普通流量会被拖垮';
+  } else {
+    lw.className = 'warn show ok';
+    lw.textContent = '✓ 安全：D 所需并发约占容量 '+(limit?Math.round(need/limit*100):0)+'%';
+  }
+  // 顶部结论
+  const defs = [];
+  if (P.timeout) defs.push('超时上限');
+  if (P.bulkhead) defs.push('舱壁隔离');
+  if (P.breaker) defs.push('熔断器');
+  const vEl = $('verdict');
+  let cls, txt;
+  if (nR !== null && nR < 0.95){
+    cls='bad';
+    txt='普通流量成功率 '+Math.round(nR*100)+'% —— D 的慢正在杀死无辜流量（资源传染）';
+  } else if (defs.length && P.dDelay > P.tmo){
+    cls='good';
+    txt='防御生效（'+defs.join(' + ')+'）：普通流量成功率 '+(nR===null?'—':Math.round(nR*100)+'%')+'，D 的慢已被隔离在主池之外';
+  } else if (need > P.pool){
+    cls='warn';
+    txt='隐患：D 所需并发 '+fmtNum(need)+' 线程已超过池容量 '+P.pool+'，D 一旦变慢就会打满线程池';
+  } else {
+    cls='ok';
+    txt='系统健康：D 所需并发 '+fmtNum(need)+' 线程，远低于池容量 '+P.pool;
+  }
+  vEl.className = 'verdict '+cls;
+  $('verdictText').textContent = txt;
+}
+
+/* ============ 控件绑定 ============ */
+function sliderToDelay(v){ return 0.05 * Math.pow(600, v/1000); }   // 50ms → 30s
+function delayToSlider(d){ return Math.round(1000 * Math.log(d/0.05) / Math.log(600)); }
+function refreshLatLabel(){ $('latVal').textContent = fmtDur(P.dDelay); }
+
+$('lat').addEventListener('input', e=>{
+  P.dDelay = sliderToDelay(+e.target.value); refreshLatLabel();
+});
+$('dRate').addEventListener('input', e=>{
+  P.dRate = +e.target.value; $('dRateVal').textContent = P.dRate+' req/s';
+});
+$('pool').addEventListener('input', e=>{
+  P.pool = +e.target.value; $('poolVal').textContent = P.pool;
+});
+$('swTimeout').addEventListener('change', e=>{
+  P.timeout = e.target.checked;
+  if (P.timeout){ // 立即对在飞的 D 调用施加超时（教学演示：钳制即时可见）
+    for (const r of sim.dActive){
+      if (r.end > r.start + P.tmo){ r.end = r.start + P.tmo; r.ok = false; }
+    }
+  }
+});
+$('swBulk').addEventListener('change', e=>{
+  P.bulkhead = e.target.checked;
+  if (P.bulkhead && sim.dActive.length > P.bulkSize){ // 中止超出舱壁的在飞 D 调用
+    const removed = sim.dActive.splice(0, sim.dActive.length - P.bulkSize);
+    for (const r of removed){
+      if (r.probe){ sim.probe=false; if(P.breaker){ sim.brk='open'; sim.brkOpenedAt=sim.t; } }
+      sim.brkStats.push({t:sim.t, ok:false});
+    }
+  }
+});
+$('swBreaker').addEventListener('change', e=>{
+  P.breaker = e.target.checked;
+  if (!P.breaker){ sim.brk='closed'; sim.probe=false; }
+});
+$('btnFault').addEventListener('click', ()=>{
+  P.dDelay = 30; $('lat').value = delayToSlider(30); refreshLatLabel();
+});
+$('btnReset').addEventListener('click', ()=>{
+  P.dDelay=0.05; P.dRate=20; P.pool=200;
+  P.timeout=false; P.bulkhead=false; P.breaker=false;
+  $('lat').value = delayToSlider(0.05); $('dRate').value=20; $('pool').value=200;
+  $('swTimeout').checked=false; $('swBulk').checked=false; $('swBreaker').checked=false;
+  $('dRateVal').textContent='20 req/s'; $('poolVal').textContent='200';
+  refreshLatLabel();
+  resetSim(); rejFlash = 0;
+});
+
+/* ============ 主循环 ============ */
+let last = performance.now(), acc = 0;
+function frame(now){
+  let el = (now-last)/1000; last = now;
+  if (el > 0.25) el = 0.25;
+  acc += el;
+  let rej = false;
+  while (acc >= TICK){ acc -= TICK; if (tick() > 0) rej = true; }
+  if (rej) rejFlash = 1; else rejFlash *= 0.94;
+  draw();
+  updateUI();
+  requestAnimationFrame(frame);
+}
+resize();
+refreshLatLabel();
+requestAnimationFrame(frame);
+
+window.__demo = { P, getSim: () => sim, tick };
+</script>
+</body>
+</html>
