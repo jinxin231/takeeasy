@@ -1,0 +1,170 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1700" height="1120" viewBox="0 0 1700 1120">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#cbd5e1"/>
+    </marker>
+    <style>
+      text { font-family: "Noto Sans CJK SC", "Microsoft YaHei", "PingFang SC", sans-serif; }
+      .title { fill:#f8fafc; font-size:34px; font-weight:700; }
+      .layer-no { fill:#94a3b8; font-size:21px; font-weight:600; }
+      .layer-name { fill:#f8fafc; font-size:29px; font-weight:700; }
+      .layer-sub { fill:#cbd5e1; font-size:23px; }
+      .note { fill:#e2e8f0; font-size:23px; }
+      .small { fill:#aebdd0; font-size:19px; }
+      .frame-label { font-size:22px; font-weight:700; }
+      .cell { fill:#ffffff; font-size:21px; font-weight:600; }
+      .seg { fill:#ffffff; font-size:21px; font-weight:700; text-anchor:middle; }
+      .bytes { fill:#f8fafc; font-size:18px; text-anchor:middle; }
+    </style>
+  </defs>
+
+  <rect width="1700" height="1120" fill="#0b1220"/>
+  <text x="60" y="57" class="title">Dubbo 帧 vs TCP 段：两种切分，互不感知</text>
+  <text x="1640" y="53" class="small" text-anchor="end">示意图 · 帧头宽度已放大</text>
+
+  <!-- 第一层 -->
+  <rect x="40" y="95" width="1620" height="260" rx="16" fill="#111c2e" stroke="#2a3a50" stroke-width="2"/>
+  <line x1="250" y1="120" x2="250" y2="330" stroke="#2a3a50" stroke-width="2"/>
+  <text x="65" y="139" class="layer-no">第一层</text>
+  <text x="65" y="177" class="layer-name">应用层</text>
+  <text x="65" y="211" class="layer-sub">Dubbo 帧</text>
+
+  <text x="430" y="146" class="frame-label" fill="#60a5fa" text-anchor="middle">R1｜帧1：头16B + body 2KB</text>
+  <text x="990" y="146" class="frame-label" fill="#34d399" text-anchor="middle">R2｜帧2：头16B + body 8KB</text>
+  <text x="1500" y="146" class="frame-label" fill="#fb923c" text-anchor="middle">R3｜帧3：头16B + body 1KB</text>
+
+  <!-- R1：头 60，body 200 -->
+  <rect x="300" y="170" width="60" height="105" fill="#1d4ed8"/>
+  <rect x="360" y="170" width="200" height="105" fill="#3b82f6"/>
+  <rect x="300" y="170" width="260" height="105" rx="5" fill="none" stroke="#93c5fd" stroke-width="2"/>
+  <line x1="360" y1="170" x2="360" y2="275" stroke="#bfdbfe" stroke-width="2"/>
+  <text x="330" y="228" class="cell" text-anchor="middle" font-size="18">reqID</text>
+  <text x="460" y="216" class="cell" text-anchor="middle">body</text>
+  <text x="460" y="249" class="cell" text-anchor="middle">2KB</text>
+
+  <!-- R2：头 60，body 800 -->
+  <rect x="560" y="170" width="60" height="105" fill="#047857"/>
+  <rect x="620" y="170" width="800" height="105" fill="#10b981"/>
+  <rect x="560" y="170" width="860" height="105" rx="5" fill="none" stroke="#6ee7b7" stroke-width="2"/>
+  <line x1="620" y1="170" x2="620" y2="275" stroke="#a7f3d0" stroke-width="2"/>
+  <text x="590" y="228" class="cell" text-anchor="middle" font-size="18">reqID</text>
+  <text x="1020" y="216" class="cell" text-anchor="middle">body</text>
+  <text x="1020" y="249" class="cell" text-anchor="middle">8KB</text>
+
+  <!-- R3：头 60，body 100 -->
+  <rect x="1420" y="170" width="60" height="105" fill="#c2410c"/>
+  <rect x="1480" y="170" width="100" height="105" fill="#f97316"/>
+  <rect x="1420" y="170" width="160" height="105" rx="5" fill="none" stroke="#fdba74" stroke-width="2"/>
+  <line x1="1480" y1="170" x2="1480" y2="275" stroke="#fed7aa" stroke-width="2"/>
+  <text x="1450" y="228" class="cell" text-anchor="middle" font-size="18">reqID</text>
+  <text x="1530" y="216" class="cell" text-anchor="middle" font-size="19">body</text>
+  <text x="1530" y="249" class="cell" text-anchor="middle" font-size="19">1KB</text>
+
+  <text x="300" y="323" class="note">应用层约定：一请求 = 一帧，不许拆分</text>
+
+  <!-- 第一层到第二层 -->
+  <line x1="850" y1="355" x2="850" y2="396" stroke="#cbd5e1" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="880" y="386" class="note">发送时：OS 切段</text>
+
+  <!-- 第二层 -->
+  <rect x="40" y="405" width="1620" height="270" rx="16" fill="#111c2e" stroke="#2a3a50" stroke-width="2"/>
+  <line x1="250" y1="430" x2="250" y2="650" stroke="#2a3a50" stroke-width="2"/>
+  <text x="65" y="449" class="layer-no">第二层</text>
+  <text x="65" y="487" class="layer-name">传输层</text>
+  <text x="65" y="521" class="layer-sub">TCP 段</text>
+
+  <!-- 段1：R1 头 + body 起点 -->
+  <rect x="300" y="465" width="60" height="100" fill="#1d4ed8"/>
+  <rect x="360" y="465" width="100" height="100" fill="#3b82f6"/>
+  <rect x="300" y="465" width="160" height="100" fill="none" stroke="#dbeafe" stroke-width="1.6"/>
+  <line x1="360" y1="465" x2="360" y2="565" stroke="#bfdbfe" stroke-width="1.4"/>
+  <text x="380" y="506" class="seg">段1</text>
+  <text x="380" y="541" class="bytes">~1500B</text>
+
+  <!-- 段2：跨帧，R1 结尾 + R2 开头 -->
+  <rect x="460" y="465" width="100" height="100" fill="#3b82f6"/>
+  <rect x="560" y="465" width="60" height="100" fill="#047857"/>
+  <rect x="460" y="465" width="160" height="100" fill="none" stroke="#e2e8f0" stroke-width="1.6"/>
+  <line x1="560" y1="465" x2="560" y2="565" stroke="#f8fafc" stroke-width="2" stroke-dasharray="6 5"/>
+  <text x="540" y="506" class="seg">段2</text>
+  <text x="540" y="541" class="bytes">~1500B</text>
+
+  <!-- 段3～段6：R2 -->
+  <rect x="620" y="465" width="160" height="100" fill="#10b981" stroke="#d1fae5" stroke-width="1.6"/>
+  <text x="700" y="506" class="seg">段3</text>
+  <text x="700" y="541" class="bytes">~1500B</text>
+  <rect x="780" y="465" width="160" height="100" fill="#10b981" stroke="#d1fae5" stroke-width="1.6"/>
+  <text x="860" y="506" class="seg">段4</text>
+  <text x="860" y="541" class="bytes">~1500B</text>
+  <rect x="940" y="465" width="160" height="100" fill="#10b981" stroke="#d1fae5" stroke-width="1.6"/>
+  <text x="1020" y="506" class="seg">段5</text>
+  <text x="1020" y="541" class="bytes">~1500B</text>
+  <rect x="1100" y="465" width="180" height="100" fill="#10b981" stroke="#d1fae5" stroke-width="1.6"/>
+  <text x="1190" y="506" class="seg">段6</text>
+  <text x="1190" y="541" class="bytes">~1500B</text>
+
+  <!-- 段7：R2 结尾 + R3 开头 -->
+  <rect x="1280" y="465" width="140" height="100" fill="#10b981"/>
+  <rect x="1420" y="465" width="20" height="100" fill="#c2410c"/>
+  <rect x="1280" y="465" width="160" height="100" fill="none" stroke="#e2e8f0" stroke-width="1.6"/>
+  <line x1="1420" y1="465" x2="1420" y2="565" stroke="#f8fafc" stroke-width="2" stroke-dasharray="6 5"/>
+  <text x="1360" y="506" class="seg">段7</text>
+  <text x="1360" y="541" class="bytes">~1500B</text>
+
+  <!-- 段8：R3 剩余部分 -->
+  <rect x="1440" y="465" width="40" height="100" fill="#c2410c"/>
+  <rect x="1480" y="465" width="100" height="100" fill="#f97316"/>
+  <rect x="1440" y="465" width="140" height="100" fill="none" stroke="#ffedd5" stroke-width="1.6"/>
+  <line x1="1480" y1="465" x2="1480" y2="565" stroke="#fed7aa" stroke-width="1.4"/>
+  <text x="1510" y="506" class="seg">段8</text>
+  <text x="1510" y="541" class="bytes">~1500B</text>
+
+  <text x="540" y="606" fill="#f8fafc" font-size="20" font-weight="600" text-anchor="middle">段2：R1 结尾 + R2 开头</text>
+  <text x="940" y="650" class="note" text-anchor="middle">TCP 按 MTU/拥塞窗口任意切，不知道帧边界；段可以装两个帧的各部分</text>
+
+  <!-- 第二层到第三层 -->
+  <line x1="850" y1="675" x2="850" y2="716" stroke="#cbd5e1" stroke-width="3" marker-end="url(#arrow)"/>
+  <text x="880" y="706" class="note">接收时：先重组流，再切帧</text>
+
+  <!-- 第三层 -->
+  <rect x="40" y="725" width="1620" height="290" rx="16" fill="#111c2e" stroke="#2a3a50" stroke-width="2"/>
+  <line x1="250" y1="750" x2="250" y2="990" stroke="#2a3a50" stroke-width="2"/>
+  <text x="65" y="769" class="layer-no">第三层</text>
+  <text x="65" y="807" class="layer-name">接收端</text>
+  <text x="65" y="841" class="layer-sub">解码器视角</text>
+
+  <text x="300" y="773" class="note">TCP 重组后的连续字节流（按序号）</text>
+  <text x="1580" y="773" class="small" text-anchor="end">竖虚线 = Dubbo 解码器识别出的帧边界</text>
+
+  <rect x="300" y="805" width="1280" height="80" rx="6" fill="#2b3b50" stroke="#94a3b8" stroke-width="2"/>
+  <g stroke="#60748d" stroke-width="2" opacity="0.65">
+    <line x1="340" y1="805" x2="340" y2="816"/><line x1="380" y1="805" x2="380" y2="816"/>
+    <line x1="420" y1="805" x2="420" y2="816"/><line x1="460" y1="805" x2="460" y2="816"/>
+    <line x1="500" y1="805" x2="500" y2="816"/><line x1="540" y1="805" x2="540" y2="816"/>
+    <line x1="580" y1="805" x2="580" y2="816"/><line x1="620" y1="805" x2="620" y2="816"/>
+    <line x1="660" y1="805" x2="660" y2="816"/><line x1="700" y1="805" x2="700" y2="816"/>
+    <line x1="740" y1="805" x2="740" y2="816"/><line x1="780" y1="805" x2="780" y2="816"/>
+    <line x1="820" y1="805" x2="820" y2="816"/><line x1="860" y1="805" x2="860" y2="816"/>
+    <line x1="900" y1="805" x2="900" y2="816"/><line x1="940" y1="805" x2="940" y2="816"/>
+    <line x1="980" y1="805" x2="980" y2="816"/><line x1="1020" y1="805" x2="1020" y2="816"/>
+    <line x1="1060" y1="805" x2="1060" y2="816"/><line x1="1100" y1="805" x2="1100" y2="816"/>
+    <line x1="1140" y1="805" x2="1140" y2="816"/><line x1="1180" y1="805" x2="1180" y2="816"/>
+    <line x1="1220" y1="805" x2="1220" y2="816"/><line x1="1260" y1="805" x2="1260" y2="816"/>
+    <line x1="1300" y1="805" x2="1300" y2="816"/><line x1="1340" y1="805" x2="1340" y2="816"/>
+    <line x1="1380" y1="805" x2="1380" y2="816"/><line x1="1420" y1="805" x2="1420" y2="816"/>
+    <line x1="1460" y1="805" x2="1460" y2="816"/><line x1="1500" y1="805" x2="1500" y2="816"/>
+    <line x1="1540" y1="805" x2="1540" y2="816"/>
+  </g>
+  <text x="940" y="855" fill="#f8fafc" font-size="26" font-weight="600" text-anchor="middle">连续字节流：不再保留 TCP 段边界</text>
+
+  <!-- 与第一层 x=560、x=1420 精确对齐 -->
+  <line x1="560" y1="790" x2="560" y2="906" stroke="#f8fafc" stroke-width="3" stroke-dasharray="10 8"/>
+  <line x1="1420" y1="790" x2="1420" y2="906" stroke="#f8fafc" stroke-width="3" stroke-dasharray="10 8"/>
+  <text x="575" y="925" class="small">帧1｜帧2</text>
+  <text x="1435" y="925" class="small">帧2｜帧3</text>
+
+  <text x="300" y="963" class="note">接收端：TCP 先重组字节流（按序号），Dubbo 解码器再按帧头长度切帧</text>
+  <text x="300" y="995" fill="#fbbf24" font-size="23" font-weight="700">半包粘包 = 段边界与帧边界不对齐</text>
+
+  <text x="850" y="1072" fill="#f8fafc" font-size="27" font-weight="700" text-anchor="middle">两层切分互相独立　｜　帧 = 应用层的语义边界　｜　段 = 传输层的物理单位</text>
+</svg>
